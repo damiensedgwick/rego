@@ -1,9 +1,12 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/goccy/go-json"
 
 	comatproto "github.com/bluesky-social/indigo/api/atproto"
+	apibsky "github.com/bluesky-social/indigo/api/bsky"
 )
 
 type Event struct {
@@ -34,5 +37,23 @@ var (
 )
 
 func main() {
-	// TODO: Implement me!!!!
+
+}
+
+// "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"
+// "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos?cursor={}"
+// "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos?cursor=1537553850"
+
+func handleEvent(event *Event) error {
+	if event.Commit != nil && (event.Commit.OpType == CommitCreateRecord || event.Commit.OpType == CommitUpdateRecord) {
+		switch event.Commit.Collection {
+		case "app.bsky.feed.post":
+			var post apibsky.FeedPost
+			if err := json.Unmarshal(event.Commit.Record, &post); err != nil {
+				return fmt.Errorf("failed to unmarshal post: %w", err)
+			}
+		}
+	}
+
+	return nil
 }
