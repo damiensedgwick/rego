@@ -1,12 +1,15 @@
 package main
 
 import (
-	"fmt"
+	"bytes"
+	"log"
+	"net/http"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/goccy/go-json"
+	"github.com/gorilla/websocket"
 
 	comatproto "github.com/bluesky-social/indigo/api/atproto"
-	apibsky "github.com/bluesky-social/indigo/api/bsky"
 )
 
 type Event struct {
@@ -36,24 +39,75 @@ var (
 	CommitDeleteRecord = "d"
 )
 
-func main() {
-
-}
-
 // "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"
 // "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos?cursor={}"
 // "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos?cursor=1537553850"
 
-func handleEvent(event *Event) error {
-	if event.Commit != nil && (event.Commit.OpType == CommitCreateRecord || event.Commit.OpType == CommitUpdateRecord) {
-		switch event.Commit.Collection {
-		case "app.bsky.feed.post":
-			var post apibsky.FeedPost
-			if err := json.Unmarshal(event.Commit.Record, &post); err != nil {
-				return fmt.Errorf("failed to unmarshal post: %w", err)
+func main() {
+	conn, err := connect("wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos?curso=1537553850", nil)
+	if err != nil {
+		log.Fatalf("failed to connect: %v", err)
+	}
+	defer conn.Close()
+	log.Println("successfully connected to bluesky firehose")
+
+	messages := make(chan []byte)
+
+	go func() {
+		defer close(messages)
+		for {
+			msg, err := read(conn)
+			if err != nil {
+				log.Fatalf("failed to read message: %v", err)
+			}
+			messages <- msg
+		}
+	}()
+
+	events := make(chan Event)
+
+	go func() {
+		defer close(events)
+		for msg := range messages {
+			err := parse(msg, events)
+			if err != nil {
+				log.Fatalf("failed to parse message: %v", err)
 			}
 		}
+	}()
+
+	for event := range events {
+		log.Printf("event: %+v", event)
 	}
+}
+
+func connect(url string, header http.Header) (*websocket.Conn, error) {
+	conn, _, err := websocket.DefaultDialer.Dial(url, header)
+	if err != nil {
+		return nil, err
+	}
+
+	return conn, nil
+}
+
+func read(conn *websocket.Conn) ([]byte, error) {
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		return nil, err
+	}
+
+	return msg, nil
+}
+
+func parse(msg []byte, ec chan Event) error {
+	var event Event
+
+	decoder := cbor.NewDecoder(bytes.NewReader(msg))
+	if err := decoder.Decode(&event); err != nil {
+		return err
+	}
+
+	ec <- event
 
 	return nil
 }
