@@ -4,40 +4,82 @@ import (
 	"bytes"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
-	"github.com/goccy/go-json"
 	"github.com/gorilla/websocket"
-
-	comatproto "github.com/bluesky-social/indigo/api/atproto"
+	"github.com/ipfs/go-cid"
 )
 
-type Event struct {
-	Did       string                                  `json:"did" cborgen:"did"`
-	TimeUS    int64                                   `json:"time_us" cborgen:"time_us"`
-	EventType string                                  `json:"type" cborgen:"type"`
-	Commit    *Commit                                 `json:"commit,omitempty" cborgen:"commit,omitempty"`
-	Account   *comatproto.SyncSubscribeRepos_Account  `json:"account,omitempty" cborgen:"account,omitempty"`
-	Identity  *comatproto.SyncSubscribeRepos_Identity `json:"identity,omitempty" cborgen:"identity,omitempty"`
+// 2024/09/08 17:28:43 rawMap: map[op:1 t:#commit]
+// 2024/09/08 17:28:43 rawMap: map[op:1 t:#commit]
+// 2024/09/08 17:28:43 rawMap: map[op:1 t:#commit]
+// 2024/09/08 17:28:43 rawMap: map[op:1 t:#commit]
+// 2024/09/08 17:28:43 rawMap: map[op:1 t:#commit]
+// 2024/09/08 17:28:43 rawMap: map[op:1 t:#commit]
+// 2024/09/08 17:28:43 rawMap: map[op:1 t:#commit]
+// 2024/09/08 17:28:43 rawMap: map[op:1 t:#account]
+// 2024/09/08 17:28:43 rawMap: map[op:1 t:#commit]
+// 2024/09/08 17:28:43 rawMap: map[op:1 t:#commit]
+// 2024/09/08 17:28:43 rawMap: map[op:1 t:#commit]
+// 2024/09/08 17:28:43 rawMap: map[op:1 t:#commit]
+// 2024/09/08 17:28:43 rawMap: map[op:1 t:#commit]
+
+type Header struct {
+	Type      string `cbor:"t"`
+	Operation uint8  `cbor:"op"`
 }
 
-type Commit struct {
-	Rev        string          `json:"rev,omitempty" cborgen:"rev"`
-	OpType     string          `json:"type" cborgen:"type"`
-	Collection string          `json:"collection,omitempty" cborgen:"collection"`
-	RKey       string          `json:"rkey,omitempty" cborgen:"rkey"`
-	Record     json.RawMessage `json:"record,omitempty" cborgen:"record,omitempty"`
-}
+type SubscribeReposCommitOperationAction string
 
-var (
-	EventCommit   = "com"
-	EventAccount  = "acc"
-	EventIdentity = "id"
-
-	CommitCreateRecord = "c"
-	CommitUpdateRecord = "u"
-	CommitDeleteRecord = "d"
+const (
+	Create SubscribeReposCommitOperationAction = "create"
+	Update SubscribeReposCommitOperationAction = "update"
+	Delete SubscribeReposCommitOperationAction = "delete"
 )
+
+type SubscribeReposCommitOperation struct {
+	Path   string                              `cbor:"path"`
+	Action SubscribeReposCommitOperationAction `cbor:"action"`
+	CID    *cid.Cid                            `cbor:"cid,omitempty"`
+}
+
+type SubscribeReposCommit struct {
+	Commit     cid.Cid                         `cbor:"commit"`
+	Operations []SubscribeReposCommitOperation `cbor:"ops"`
+	Prev       *cid.Cid                        `cbor:"prev,omitempty"`
+	Rebase     bool                            `cbor:"rebase"`
+	Repo       string                          `cbor:"repo"`
+	Sequence   int64                           `cbor:"seq"`
+	Time       time.Time                       `cbor:"time"`
+	TooBig     bool                            `cbor:"tooBig"`
+}
+
+type SubscribeReposHandle struct {
+	DID      string    `cbor:"did"`
+	Handle   string    `cbor:"handle"`
+	Sequence int64     `cbor:"seq"`
+	Time     time.Time `cbor:"time"`
+}
+
+type SubscribeReposTombstone struct {
+	DID      string    `cbor:"did"`
+	Sequence int64     `cbor:"seq"`
+	Time     time.Time `cbor:"time"`
+}
+
+type SubscribeReposAccount struct {
+	Sequence int64 `cbor:"seq"`
+}
+
+type SubscribeReposIdentity struct {
+	Sequence int64 `cbor:"seq"`
+}
+
+type SubscribeRepos struct {
+	Header Header
+	Body   interface{}
+}
 
 // "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"
 // "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos?cursor={}"
@@ -64,15 +106,16 @@ func main() {
 		}
 	}()
 
-	events := make(chan Event)
+	events := make(chan SubscribeRepos)
 
 	go func() {
 		defer close(events)
 		for msg := range messages {
-			err := parse(msg, events)
+			event, err := parse(msg)
 			if err != nil {
 				log.Fatalf("failed to parse message: %v", err)
 			}
+			events <- event
 		}
 	}()
 
@@ -99,15 +142,15 @@ func read(conn *websocket.Conn) ([]byte, error) {
 	return msg, nil
 }
 
-func parse(msg []byte, ec chan Event) error {
-	var event Event
-
+func parse(msg []byte) (SubscribeRepos, error) {
+	var header Header
 	decoder := cbor.NewDecoder(bytes.NewReader(msg))
-	if err := decoder.Decode(&event); err != nil {
-		return err
+	if err := decoder.Decode(&header); err != nil {
+		return SubscribeRepos{}, err
 	}
 
-	ec <- event
-
-	return nil
+	return SubscribeRepos{
+		Header: header,
+		Body:   nil,
+	}, nil
 }
