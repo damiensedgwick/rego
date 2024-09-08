@@ -17,9 +17,9 @@ type Header struct {
 }
 
 type SubscribeReposCommit struct {
-	Blobs      []byte                          `cbor:"blobs"`
-	Blocks     []byte                          `cbor:"blocks"`
-	Commit     []byte                          `cbor:"commit"`
+	Blobs      []byte                          `cbor:"blobs"`  // TODO: Needs to be typed properly
+	Blocks     []byte                          `cbor:"blocks"` // TODO: Needs to be typed properly
+	Commit     []byte                          `cbor:"commit"` // TODO: Needs to be typed properly
 	Operations []SubscribeReposCommitOperation `cbor:"ops"`
 	Prev       *cid.Cid                        `cbor:"prev,omitempty"`
 	Rebase     bool                            `cbor:"rebase"`
@@ -36,7 +36,7 @@ type SubscribeReposCommitOperationAction string
 type SubscribeReposCommitOperation struct {
 	Path   string                              `cbor:"path"`
 	Action SubscribeReposCommitOperationAction `cbor:"action"`
-	CID    []byte                              `cbor:"cid,omitempty"`
+	CID    []byte                              `cbor:"cid,omitempty"` // TODO: Needs to be typed properly
 }
 
 const (
@@ -84,7 +84,7 @@ func main() {
 	}()
 
 	for event := range events {
-		log.Printf("event: %v", event)
+		log.Printf("event: %+v", event)
 	}
 }
 
