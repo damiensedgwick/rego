@@ -2,125 +2,84 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
-	"time"
+	"strings"
 
-	"github.com/fxamacker/cbor/v2"
+	"github.com/bluesky-social/indigo/api/atproto"
+	"github.com/bluesky-social/indigo/atproto/data"
+	"github.com/bluesky-social/indigo/events"
+	"github.com/bluesky-social/indigo/events/schedulers/sequential"
+	"github.com/bluesky-social/indigo/repo"
 	"github.com/gorilla/websocket"
-	"github.com/ipfs/go-cid"
 )
 
-type Header struct {
-	Type      string `cbor:"t"`
-	Operation uint8  `cbor:"op"`
+type TextPost struct {
+	Created string   `json:"createdAt"`
+	Langs   []string `json:"langs"`
+	Text    string   `json:"text"`
 }
-
-type SubscribeReposCommit struct {
-	Blobs      []byte                          `cbor:"blobs"`  // TODO: Needs to be typed properly
-	Blocks     []byte                          `cbor:"blocks"` // TODO: Needs to be typed properly
-	Commit     []byte                          `cbor:"commit"` // TODO: Needs to be typed properly
-	Operations []SubscribeReposCommitOperation `cbor:"ops"`
-	Prev       *cid.Cid                        `cbor:"prev,omitempty"`
-	Rebase     bool                            `cbor:"rebase"`
-	Repo       string                          `cbor:"repo"`
-	Rev        string                          `cbor:"rev"`
-	Sequence   int64                           `cbor:"seq"`
-	Since      string                          `cbor:"since"`
-	Time       time.Time                       `cbor:"time"`
-	TooBig     bool                            `cbor:"tooBig"`
-}
-
-type SubscribeReposCommitOperationAction string
-
-type SubscribeReposCommitOperation struct {
-	Path   string                              `cbor:"path"`
-	Action SubscribeReposCommitOperationAction `cbor:"action"`
-	CID    []byte                              `cbor:"cid,omitempty"` // TODO: Needs to be typed properly
-}
-
-const (
-	Create SubscribeReposCommitOperationAction = "create"
-	Update SubscribeReposCommitOperationAction = "update"
-	Delete SubscribeReposCommitOperationAction = "delete"
-)
-
-// "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"
-// "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos?cursor={}"
-// "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos?cursor=1537553850"
 
 func main() {
-	conn, err := connect("wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos?curso=1543524352", nil)
+	ctx := context.Background()
+
+	uri := "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos?cursor=1573867440"
+	con, _, err := websocket.DefaultDialer.Dial(uri, http.Header{})
 	if err != nil {
-		log.Fatalf("failed to connect: %v", err)
+		log.Fatalf("error connecting to firehose: %v", err)
 	}
-	defer conn.Close()
-	log.Println("successfully connected to bluesky firehose")
 
-	messages := make(chan []byte)
+	rsc := &events.RepoStreamCallbacks{
+		RepoCommit: func(evt *atproto.SyncSubscribeRepos_Commit) error {
+			for _, op := range evt.Ops {
+				if strings.Contains(op.Path, "app.bsky.feed.post") {
+					rr, err := repo.ReadRepoFromCar(ctx, bytes.NewReader(evt.Blocks))
+					if err != nil {
+						fmt.Println("error reading repo from car")
+						return nil
+					}
 
-	go func() {
-		defer close(messages)
-		for {
-			msg, err := read(conn)
-			if err != nil {
-				log.Fatalf("failed to read message: %v", err)
+					_, recB, err := rr.GetRecordBytes(ctx, op.Path)
+					if err != nil {
+						fmt.Println("error getting record bytes")
+						break
+					}
+
+					rec, err := data.UnmarshalCBOR(*recB)
+					if err != nil {
+						return fmt.Errorf("failed to unmarshal record: %w", err)
+					}
+
+					recJSON, err := json.Marshal(rec)
+					if err != nil {
+						fmt.Println("error marshalling record to json")
+						break
+					}
+
+					var post TextPost
+					err = json.Unmarshal(recJSON, &post)
+					if err != nil {
+						fmt.Println("error unmarshalling record json")
+						break
+					}
+
+					for _, lang := range post.Langs {
+						if lang == "en" && post.Text != "" {
+							fmt.Println(post.Text)
+							break
+						}
+					}
+				}
+
 			}
-			messages <- msg
-		}
-	}()
 
-	events := make(chan SubscribeReposCommit)
-
-	go func() {
-		defer close(events)
-		for msg := range messages {
-			event, err := parse(msg)
-			if err != nil {
-				log.Fatalf("failed to parse message: %v", err)
-			}
-			events <- event
-		}
-	}()
-
-	for event := range events {
-		log.Printf("event: %+v", event)
-	}
-}
-
-func connect(url string, header http.Header) (*websocket.Conn, error) {
-	conn, _, err := websocket.DefaultDialer.Dial(url, header)
-	if err != nil {
-		return nil, err
+			return nil
+		},
 	}
 
-	return conn, nil
-}
-
-func read(conn *websocket.Conn) ([]byte, error) {
-	_, msg, err := conn.ReadMessage()
-	if err != nil {
-		return nil, err
-	}
-
-	return msg, nil
-}
-
-func parse(msg []byte) (SubscribeReposCommit, error) {
-	var header Header
-	decoder := cbor.NewDecoder(bytes.NewReader(msg))
-	if err := decoder.Decode(&header); err != nil {
-		return SubscribeReposCommit{}, err
-	}
-
-	if header.Type != "#commit" {
-		return SubscribeReposCommit{}, nil
-	}
-
-	var commit SubscribeReposCommit
-	if err := decoder.Decode(&commit); err != nil {
-		return SubscribeReposCommit{}, err
-	}
-
-	return commit, nil
+	sched := sequential.NewScheduler("myfirehose", rsc.EventHandler)
+	events.HandleRepoStream(context.Background(), con, sched)
 }
